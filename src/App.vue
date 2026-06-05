@@ -6,7 +6,7 @@ const isListening = ref(false)
 const errorMessage = ref('')
 const manualInput = ref('')
 const translationCache = ref(new Map()) // 翻译缓存
-const apiKey = ref('') // MyMemory API Key（可选）
+const apiKey = ref('3099177871@qq.com') // MyMemory API Key（邮箱提升配额）
 let recognition = null
 let currentId = 0
 let debounceTimer = null
@@ -429,8 +429,8 @@ const handleManualInput = () => {
         <div class="flex gap-2">
           <input 
             v-model="apiKey"
-            type="password"
-            placeholder="MyMemory API Key（可选，提升翻译配额）"
+            type="text"
+            placeholder="MyMemory API Key/邮箱（提升翻译配额）"
             class="flex-1 px-4 py-2 bg-gray-800/50 border border-gray-700 rounded-lg focus:outline-none focus:border-blue-500 transition-colors text-sm"
           />
           <span class="px-4 py-2 bg-gray-700/50 rounded-lg text-sm text-gray-400 flex items-center">
