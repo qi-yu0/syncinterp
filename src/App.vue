@@ -6,7 +6,9 @@ const isListening = ref(false)
 const errorMessage = ref('')
 const manualInput = ref('')
 const translationCache = ref(new Map()) // 翻译缓存
-const apiKey = ref('3099177871@qq.com') // MyMemory API Key（邮箱提升配额）
+const apiKey = ref('') // MyMemory API Key（可选）
+const originalTexts = ref(new Map()) // 保存修正前的英文原文
+const translationMode = ref('normal') // 翻译模式：'normal'（常规）或 'ai'（AI翻译）
 let recognition = null
 let currentId = 0
 let debounceTimer = null
@@ -144,6 +146,12 @@ const translateText = async (text, id) => {
     return
   }
   
+  // AI 模式下调用 AI 翻译接口
+  if (translationMode.value === 'ai') {
+    await aiTranslate(text, id)
+    return
+  }
+  
   try {
     // 构建 URL，包含 API Key（如果有）
     let url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|zh-CN`
@@ -179,6 +187,46 @@ const translateText = async (text, id) => {
   }
 }
 
+// AI 翻译：调用后端 AI 接口进行翻译
+const aiTranslate = async (text, id, shouldSpeak = false) => {
+  try {
+    const response = await fetch('http://localhost:3000/api/translate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ text })
+    })
+    
+    const data = await response.json()
+    
+    if (data.translation) {
+      const item = subtitleList.value.find(item => item.id === id)
+      if (item) {
+        item.translation = data.translation
+        // 只有 final 状态才播放语音
+        if (shouldSpeak && item.status === 'final') {
+          speakText(data.translation)
+        }
+      }
+      // 存入缓存
+      const cacheKey = text.toLowerCase().trim()
+      translationCache.value.set(cacheKey, data.translation)
+    } else {
+      const item = subtitleList.value.find(item => item.id === id)
+      if (item) {
+        item.translation = data.error || 'AI 翻译失败'
+      }
+    }
+  } catch (error) {
+    console.error('AI Translation error:', error)
+    const item = subtitleList.value.find(item => item.id === id)
+    if (item) {
+      item.translation = '网络超时'
+    }
+  }
+}
+
 // 翻译并语音合成
 const translateAndSpeak = async (text, id) => {
   // 检查缓存
@@ -190,6 +238,12 @@ const translateAndSpeak = async (text, id) => {
       item.translation = cachedTranslation
       speakText(cachedTranslation)
     }
+    return
+  }
+  
+  // 根据模式选择翻译方式
+  if (translationMode.value === 'ai') {
+    await aiTranslate(text, id, true)  // final 状态需要播放语音
     return
   }
   
@@ -239,8 +293,9 @@ const triggerCorrection = async () => {
   // 获取所有 final 状态的条目
   const finalItems = subtitleList.value.filter(item => item.status === 'final' && item.translation)
   
-  // 当有至少 3 句时触发修正
-  if (finalItems.length >= 3) {
+  // 每当有新句子时，将其前两句和当前句子打包发送给 AI
+  if (finalItems.length >= 1) {
+    // 取最后最多 3 句（当前句 + 前两句）
     const window = finalItems.slice(-3)
     await correctSubtitles(window)
   }
@@ -271,16 +326,36 @@ const correctSubtitles = async (subtitles) => {
 const applyCorrections = (corrections) => {
   corrections.forEach(corrected => {
     const item = subtitleList.value.find(s => s.id === corrected.id)
-    if (item && item.translation !== corrected.translation) {
-      item.translation = corrected.translation
-      item.status = 'corrected'
+    if (item) {
+      let hasChange = false
       
-      // 3秒后移除修正标记
-      setTimeout(() => {
-        if (item.status === 'corrected') {
-          item.status = 'final'
-        }
-      }, 3000)
+      // 更新修正后的英文原文
+      if (corrected.original && item.original !== corrected.original) {
+        // 保存修正前的原文用于显示
+        originalTexts.value.set(item.id, item.original)
+        item.original = corrected.original
+        hasChange = true
+      }
+      
+      // 更新修正后的中文翻译
+      if (corrected.translation && item.translation !== corrected.translation) {
+        item.translation = corrected.translation
+        hasChange = true
+      }
+      
+      // 标记为已修正状态
+      if (hasChange) {
+        item.status = 'corrected'
+        
+        // 3秒后移除修正标记和原文对比
+        setTimeout(() => {
+          if (item.status === 'corrected') {
+            item.status = 'final'
+          }
+          // 5秒后清除原文对比显示
+          originalTexts.value.delete(item.id)
+        }, 5000)
+      }
     }
   })
 }
@@ -387,13 +462,18 @@ const handleManualInput = () => {
             @click="item.translation && speakText(item.translation)"
           >
             <div class="flex items-center gap-2 mb-2">
+              <!-- 显示修正前的原文（如果有） -->
+              <template v-if="originalTexts.get(item.id)">
+                <span class="text-gray-500 text-sm line-through">{{ originalTexts.get(item.id) }}</span>
+                <span class="text-gray-400">→</span>
+              </template>
               <span class="text-gray-400 text-sm">{{ item.original }}</span>
-              <span 
-                v-if="item.status === 'interim'" 
+              <span
+                v-if="item.status === 'interim'"
                 class="inline-block w-2 h-4 bg-blue-400 animate-pulse"
               ></span>
-              <span 
-                v-if="item.status === 'corrected'" 
+              <span
+                v-if="item.status === 'corrected'"
                 class="px-2 py-1 bg-yellow-500 text-black text-xs rounded-full font-semibold"
               >
                 🔄 AI修正
@@ -408,6 +488,26 @@ const handleManualInput = () => {
 
       <!-- 控制按钮 -->
       <div class="flex flex-col gap-4">
+        <!-- 模式切换下拉选择 -->
+        <div class="flex justify-center items-center gap-2">
+          <span class="text-gray-400 text-sm">翻译模式：</span>
+          <div class="relative">
+            <select
+              v-model="translationMode"
+              class="appearance-none px-4 py-2 pr-8 bg-gray-700 border border-gray-600 rounded-lg text-white font-semibold text-sm cursor-pointer focus:outline-none focus:border-blue-500 transition-colors"
+            >
+              <option value="normal">常规模式</option>
+              <option value="ai">🤖 AI模式</option>
+            </select>
+            <!-- 自定义下拉箭头 -->
+            <div class="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none">
+              <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+              </svg>
+            </div>
+          </div>
+        </div>
+
         <div class="flex justify-center gap-4">
           <button
             v-if="!isListening"
@@ -429,8 +529,8 @@ const handleManualInput = () => {
         <div class="flex gap-2">
           <input 
             v-model="apiKey"
-            type="text"
-            placeholder="MyMemory API Key/邮箱（提升翻译配额）"
+            type="password"
+            placeholder="MyMemory API Key（可选，提升翻译配额）"
             class="flex-1 px-4 py-2 bg-gray-800/50 border border-gray-700 rounded-lg focus:outline-none focus:border-blue-500 transition-colors text-sm"
           />
           <span class="px-4 py-2 bg-gray-700/50 rounded-lg text-sm text-gray-400 flex items-center">
