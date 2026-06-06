@@ -5,8 +5,6 @@ node_modules/
 .vite/
 dist/
 
-# Environment files (contain secrets)
-server/.env
 
 # IDE
 .idea/
